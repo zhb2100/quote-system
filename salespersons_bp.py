@@ -2,12 +2,13 @@
 from flask import Blueprint, request, jsonify
 from extensions import db
 from models import Salesperson, Quote
-from auth import require_admin
+from auth import require_auth, require_admin
 
 salespersons_bp = Blueprint('salespersons', __name__)
 
 
 @salespersons_bp.route('/api/salespersons', methods=['GET'])
+@require_auth
 def list_salespersons():
     page = request.args.get('page', 1, type=int)
     per_page = min(request.args.get('per_page', 50, type=int), 200)

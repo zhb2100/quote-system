@@ -1,5 +1,5 @@
 """认证模块 — JWT + 登录/注册/会话（Flask Blueprint）"""
-import secrets
+import threading
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -17,7 +17,7 @@ auth_bp = Blueprint('auth', __name__)
 # ─── Helpers ─────────────────────────────────
 
 def _get_client_ip():
-    """获取客户端真实IP"""
+    """获取客户端真实 IP，支持常见反代头"""
     if request.headers.get('X-Forwarded-For'):
         return request.headers['X-Forwarded-For'].split(',')[0].strip()
     if request.headers.get('X-Real-IP'):
@@ -25,9 +25,33 @@ def _get_client_ip():
     return request.remote_addr or ''
 
 
+def _is_private_ip(ip):
+    """判断是否为私有/本地 IP，避免向 ipapi.co 发送无效请求"""
+    if not ip:
+        return True
+    private_prefixes = (
+        '127.', '::1', 'localhost',
+        '10.',
+        '192.168.',
+        '169.254.',  # link-local
+    )
+    if ip.startswith(private_prefixes):
+        return True
+    # 172.16.0.0/12
+    parts = ip.split('.')
+    if len(parts) == 4 and parts[0] == '172':
+        try:
+            second = int(parts[1])
+            if 16 <= second <= 31:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
 def _lookup_ip_region(ip):
-    """查询IP归属地（使用 ipapi.co，免费 1000次/天）"""
-    if not ip or ip.startswith('127.') or ip.startswith('192.168.') or ip.startswith('10.'):
+    """查询 IP 归属地（ipapi.co，免费 1000次/天）"""
+    if _is_private_ip(ip):
         return '内网'
     try:
         import urllib.request, json
@@ -42,46 +66,52 @@ def _lookup_ip_region(ip):
 
 
 def _record_login(user):
-    """记录用户登录日志"""
+    """异步记录用户登录日志（放后台线程，不阻塞登录响应）"""
     ip = _get_client_ip()
-    region = _lookup_ip_region(ip) if ip and ip != '内网' else ('内网' if ip else '')
-    try:
-        log = LoginLog(
-            user_id=user.id, username=user.username,
-            ip_address=ip, region=region,
-            user_agent=(request.headers.get('User-Agent') or '')[:300],
-        )
-        db.session.add(log)
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
+    ua = (request.headers.get('User-Agent') or '')[:300]
+
+    def _bg():
+        region = _lookup_ip_region(ip)
+        try:
+            from app import app as _app
+            with _app.app_context():
+                log = LoginLog(
+                    user_id=user.id, username=user.username,
+                    ip_address=ip, region=region, user_agent=ua,
+                )
+                db.session.add(log)
+                db.session.commit()
+        except Exception:
+            pass
+
+    threading.Thread(target=_bg, daemon=True).start()
+
 
 def hash_password(password):
-    """使用 bcrypt 哈希密码（自动加盐，work factor=12）"""
+    """bcrypt 哈希密码（work factor=12）"""
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(rounds=12)).decode('utf-8')
 
 
 def verify_password(password, password_hash):
-    """验证密码 — 兼容旧SHA256哈希，登录成功后自动升级为bcrypt"""
-    # 先尝试 bcrypt
+    """验证密码，兼容旧 SHA256 格式，登录成功后自动升级"""
     try:
         if password_hash.startswith('$2b$') or password_hash.startswith('$2a$'):
             return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
     except Exception:
         pass
-    # 旧 SHA256 兼容：格式 salt$hash
+    # 旧 SHA256 兼容：salt$hash
     try:
         if '$' in password_hash:
             salt, h = password_hash.split('$', 1)
             if hashlib.sha256((salt + password).encode()).hexdigest() == h:
-                return True  # 调用方负责升级哈希
+                return True
     except Exception:
         pass
     return False
 
 
 def is_legacy_hash(password_hash):
-    """判断是否为旧SHA256哈希（需要升级）"""
+    """判断是否为旧 SHA256 哈希（需要升级）"""
     return bool(password_hash and '$' in password_hash and not password_hash.startswith('$2'))
 
 
@@ -108,27 +138,24 @@ def get_current_user(app):
 
 
 def require_auth(fn):
+    """验证当前用户已登录（直接读 g.current_user，避免重复解码 JWT）"""
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        from flask import current_app
-        user = get_current_user(current_app)
-        if not user:
+        if not getattr(g, 'current_user', None):
             return jsonify({'error': '请先登录'}), 401
-        g.current_user = user
         return fn(*args, **kwargs)
     return wrapper
 
 
 def require_admin(fn):
+    """验证当前用户为管理员（直接读 g.current_user，避免重复解码 JWT）"""
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        from flask import current_app
-        user = get_current_user(current_app)
+        user = getattr(g, 'current_user', None)
         if not user:
             return jsonify({'error': '请先登录'}), 401
         if user.role != 'admin':
             return jsonify({'error': '需要管理员权限'}), 403
-        g.current_user = user
         return fn(*args, **kwargs)
     return wrapper
 
@@ -155,8 +182,8 @@ def auth_register():
     from flask import current_app
     if not _is_registration_open():
         return jsonify({'error': '暂不开放自主注册'}), 403
-    data = request.get_json()
-    if not data or not data.get('username', '').strip() or not data.get('password', '').strip():
+    data = request.get_json(silent=True) or {}
+    if not data.get('username', '').strip() or not data.get('password', '').strip():
         return jsonify({'error': '用户名和密码不能为空'}), 400
     username = data['username'].strip()
     if len(username) < 2 or len(username) > 30:
@@ -184,15 +211,15 @@ def auth_register():
 @auth_bp.route('/api/auth/login', methods=['POST'])
 def auth_login():
     from flask import current_app
-    data = request.get_json()
-    if not data or not data.get('username', '').strip() or not data.get('password', '').strip():
+    data = request.get_json(silent=True) or {}
+    if not data.get('username', '').strip() or not data.get('password', '').strip():
         return jsonify({'error': '用户名和密码不能为空'}), 400
     user = User.query.filter_by(username=data['username'].strip()).first()
     if not user or not verify_password(data['password'].strip(), user.password_hash):
         return jsonify({'error': '用户名或密码错误'}), 401
     if not user.is_active:
         return jsonify({'error': '账号已被停用'}), 403
-    # 自动升级旧SHA256哈希为bcrypt
+    # 自动升级旧 SHA256 哈希为 bcrypt
     if is_legacy_hash(user.password_hash):
         user.password_hash = hash_password(data['password'].strip())
     user.last_login = datetime.now()
@@ -202,16 +229,10 @@ def auth_login():
     return jsonify({'token': token, 'user': user.to_dict()})
 
 
-@auth_bp.route('/api/auth/me', methods=['GET'])
-@require_auth
-def auth_me():
-    return jsonify({'user': g.current_user.to_dict()})
-
-
 @auth_bp.route('/api/auth/profile', methods=['PUT'])
 @require_auth
 def update_profile():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     user = g.current_user
     changed = False
 
@@ -239,7 +260,6 @@ def update_profile():
 @require_auth
 def session_info():
     from flask import current_app
-    is_admin = g.current_user.role == 'admin'
     token = request.headers.get('Authorization', '').replace('Bearer ', '')
     new_token = None
     try:

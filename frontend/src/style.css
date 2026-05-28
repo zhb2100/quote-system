@@ -123,14 +123,6 @@ body {
 }
 .main-wrapper.expanded { margin-left: 60px; }
 
-.topbar {
-  background: #fff;
-  border-bottom: 1px solid var(--gray-200);
-  padding: .65rem 1.5rem;
-  position: sticky; top: 0; z-index: 1030;
-  display: flex; align-items: center;
-}
-.topbar-title { font-weight: 600; font-size: 1rem; color: var(--gray-800); }
 .main-content { padding: 1.5rem; }
 
 /* ═══════════════════════════════════════════
@@ -316,18 +308,35 @@ input:checked+.slider:before { transform:translateX(20px) }
 .autocomplete-dropdown .ac-item:hover,
 .autocomplete-dropdown .ac-item.active { background: var(--primary-light); color: var(--primary); }
 
-/* Search results dropdown */
-.search-results {
-  position: absolute; z-index: 100;
-  background: #fff; border: 1px solid var(--gray-200);
-  border-radius: var(--btn-radius); margin-top: 4px;
-  max-height: 300px; overflow-y: auto;
-  box-shadow: 0 8px 24px rgba(0,0,0,.1);
-}
+
 
 /* Misc */
 .amount-total { font-size: 1rem; font-weight: 600; color: var(--danger); }
 .picker-item:hover { background: var(--primary-light); }
+
+/* 最近更新列表 — grid 固定列宽保证每行对齐 */
+.recent-quote-row {
+  display: grid;
+  grid-template-columns: 20px 1fr 110px 100px 80px;
+  align-items: center;
+  gap: 8px;
+}
+/* 平板只显示3列（隐藏供应商） */
+@media (max-width: 767px) {
+  .recent-quote-row {
+    grid-template-columns: 20px 1fr 80px;
+  }
+  .recent-quote-row .d-none.d-sm-block,
+  .recent-quote-row .d-none.d-md-block {
+    display: none !important;
+  }
+}
+/* 手机只显示2列（标题+状态） */
+@media (max-width: 575px) {
+  .recent-quote-row {
+    grid-template-columns: 20px 1fr 80px;
+  }
+}
 
 /* Table cell overflow */
 .td-name {
@@ -337,21 +346,7 @@ input:checked+.slider:before { transform:translateX(20px) }
   white-space: nowrap;
 }
 
-/* Image hover preview */
-.img-thumb-large {
-  display: none;
-  position: absolute;
-  left: 50px; top: 0;
-  width: 200px; height: auto;
-  max-height: 200px;
-  object-fit: contain;
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0,0,0,.25);
-  z-index: 100;
-  background: #fff;
-  padding: 4px;
-}
-.img-cell:hover .img-thumb-large { display: block; }
+
 
 /* ═══════════════════════════════════════════
    Animations

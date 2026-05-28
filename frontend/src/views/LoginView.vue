@@ -1,11 +1,11 @@
 <script setup>
 import { ref, inject, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useApi, BASE_URL } from '../composables/useApi'
+import { useApi } from '../composables/useApi'
 
 const router = useRouter()
 const toast = inject('toast')
-const { api, authToken, currentUser, registrationOpen, setToken, isAdmin } = useApi()
+const { api, currentUser, registrationOpen, setToken } = useApi()
 
 // ─── Login ───
 const loginUser = ref('')

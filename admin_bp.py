@@ -1,17 +1,17 @@
 """
 Admin Blueprint — 管理后台 API 路由
-从 app.py 拆分出的所有 /api/admin/* 路由及 /api/download-ticket
 """
-
 from flask import Blueprint, request, jsonify, g, current_app
 
 from extensions import db
 from models import User, SystemSetting, LoginLog
 from auth import require_admin, hash_password, _is_registration_open
-from helpers import get_setting, get_all_settings
+from helpers import get_all_settings, upsert_setting, get_pagination_args
 
-# ─── Blueprint 定义 ──────────────────────────────────────────
 admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
+
+# 允许通过 API 写入的设置键白名单
+ALLOWED_SETTING_KEYS = {'company_name', 'footer_text', 'registration_open'}
 
 # ─── Registration ────────────────────────────────────────────
 
@@ -24,20 +24,13 @@ def get_registration():
 @admin_bp.route('/registration', methods=['PUT'])
 @require_admin
 def set_registration():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     if 'registration_open' in data:
-        open_val = bool(data['registration_open'])
-        s = SystemSetting.query.filter_by(key='registration_open').first()
-        if s:
-            s.value = str(open_val).lower()
-        else:
-            db.session.add(SystemSetting(key='registration_open', value=str(open_val).lower()))
+        open_val = str(data['registration_open']).lower() == 'true'
+        upsert_setting('registration_open', str(open_val).lower())
         db.session.commit()
         current_app.config['REGISTRATION_OPEN'] = open_val
     return jsonify({'registration_open': _is_registration_open()})
-
-
-# get_setting / get_all_settings 从 helpers.py 直接导入（见文件顶部）
 
 
 @admin_bp.route('/settings', methods=['GET'])
@@ -49,15 +42,17 @@ def get_settings():
 @admin_bp.route('/settings', methods=['PUT'])
 @require_admin
 def update_settings():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     if not data:
         return jsonify({'error': '数据为空'}), 400
     for key, value in data.items():
-        s = SystemSetting.query.filter_by(key=key).first()
-        if s:
-            s.value = str(value) if value else ''
+        if key not in ALLOWED_SETTING_KEYS:
+            continue
+        if isinstance(value, bool):
+            value = str(value).lower()
         else:
-            db.session.add(SystemSetting(key=key, value=str(value) if value else ''))
+            value = str(value) if value is not None else ''
+        upsert_setting(key, value)
     db.session.commit()
     return jsonify({'settings': get_all_settings()})
 
@@ -67,8 +62,7 @@ def update_settings():
 @admin_bp.route('/users', methods=['GET'])
 @require_admin
 def list_users():
-    page = request.args.get('page', 1, type=int)
-    per_page = min(request.args.get('per_page', 20, type=int), 200)
+    page, per_page = get_pagination_args()
     search = request.args.get('search', '').strip()
     query = User.query
     if search:
@@ -81,15 +75,23 @@ def list_users():
         'users': [u.to_dict() for u in paginated.items],
         'total': paginated.total,
         'page': page,
-        'pages': paginated.pages
+        'pages': paginated.pages,
     })
+
+
+@admin_bp.route('/users/options', methods=['GET'])
+@require_admin
+def list_users_options():
+    """管理员用：获取所有用户列表用于下拉选择（从 quotes_bp 移入）"""
+    users = User.query.order_by(User.username).all()
+    return jsonify({'users': [{'id': u.id, 'username': u.username} for u in users]})
 
 
 @admin_bp.route('/users', methods=['POST'])
 @require_admin
 def create_user():
-    data = request.get_json()
-    if not data or not data.get('username', '').strip() or not data.get('password', '').strip():
+    data = request.get_json(silent=True) or {}
+    if not data.get('username', '').strip() or not data.get('password', '').strip():
         return jsonify({'error': '用户名和密码不能为空'}), 400
     username = data['username'].strip()
     if User.query.filter_by(username=username).first():
@@ -114,7 +116,7 @@ def update_user(user_id):
     user = db.session.get(User, user_id)
     if not user:
         return jsonify({'error': '用户不存在'}), 404
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     if user_id == 1 and 'role' in data and data['role'] != 'admin':
         return jsonify({'error': '主管理员不能被降级'}), 403
     if 'is_active' in data:
@@ -131,7 +133,7 @@ def reset_user_password(user_id):
     user = db.session.get(User, user_id)
     if not user:
         return jsonify({'error': '用户不存在'}), 404
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     new_pw = (data.get('password') or '').strip()
     if len(new_pw) < 8:
         return jsonify({'error': '密码至少8位'}), 400
@@ -156,11 +158,11 @@ def delete_user(user_id):
 
 
 # ─── 登录记录 ───────────────────────────────────────────────
+
 @admin_bp.route('/login-logs', methods=['GET'])
 @require_admin
 def login_logs():
-    page = request.args.get('page', 1, type=int)
-    per_page = min(request.args.get('per_page', 20, type=int), 200)
+    page, per_page = get_pagination_args()
     user_id = request.args.get('user_id', type=int)
     query = LoginLog.query.order_by(LoginLog.created_at.desc())
     if user_id:
@@ -172,6 +174,3 @@ def login_logs():
         'page': page,
         'pages': paginated.pages,
     })
-
-
-

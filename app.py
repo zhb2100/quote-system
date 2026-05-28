@@ -6,112 +6,124 @@ Flask + SQLite + REST API + Web UI
 
 import os
 import secrets
+import time as _req_time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file, send_from_directory, g
 from flask_cors import CORS
-from sqlalchemy import func
+from sqlalchemy import text, inspect as sa_inspect
 import jwt
 
 from extensions import db
 from models import Quote, User, SystemSetting
-from auth import auth_bp, hash_password, verify_password, create_token, require_auth, require_admin, _is_registration_open
-from helpers import get_setting, get_all_settings, check_quote_owner
+from auth import (
+    auth_bp, hash_password, verify_password, create_token,
+    require_auth, require_admin, _is_registration_open,
+)
+from helpers import get_all_settings
+from utils import _debug_log
+
+# ─── 蓝图导入 ────────────────────────────────────────────────
+from quotes_bp import quotes_bp
+from admin_bp import admin_bp
+from salespersons_bp import salespersons_bp
+from suppliers_bp import suppliers_bp
+
+BASE_DIR = Path(__file__).parent
+UPLOAD_DIR = BASE_DIR / 'uploads'
+EXPORT_DIR = BASE_DIR / 'exports'
 
 app = Flask(__name__)
-# CORS 限制：仅允许同源和已知域名
+
+# CORS
 _cors_origins = os.environ.get('QUOTE_CORS_ORIGINS', '').strip()
 cors_kwargs = {}
 if _cors_origins:
     cors_kwargs['origins'] = [o.strip() for o in _cors_origins.split(',') if o.strip()]
 else:
-    # 默认仅允许同源（生产环境应设置 QUOTE_CORS_ORIGINS）
     cors_kwargs['origins'] = [
         'https://bwh.ddns.mobi',
-        'http://localhost:5173',  # Vite dev
+        'http://localhost:5173',
     ]
 CORS(app, **cors_kwargs)
 
-# Register all blueprints
-app.register_blueprint(auth_bp)
-from quotes_bp import quotes_bp
-app.register_blueprint(quotes_bp)
-from admin_bp import admin_bp
-app.register_blueprint(admin_bp)
-from salespersons_bp import salespersons_bp
-app.register_blueprint(salespersons_bp)
-from suppliers_bp import suppliers_bp
-app.register_blueprint(suppliers_bp)
+# ─── 蓝图注册 ────────────────────────────────────────────────
+for _bp in (auth_bp, quotes_bp, admin_bp, salespersons_bp, suppliers_bp):
+    app.register_blueprint(_bp)
 
-BASE_DIR = Path(__file__).parent
-UPLOAD_DIR = BASE_DIR / 'uploads'
-EXPORT_DIR = BASE_DIR / 'exports'
 UPLOAD_DIR.mkdir(exist_ok=True)
 EXPORT_DIR.mkdir(exist_ok=True)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{BASE_DIR}/quote.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+app.config['JWT_EXPIRY_HOURS'] = 72
+app.config['REGISTRATION_OPEN'] = os.environ.get('QUOTE_REGISTRATION', 'true').lower() == 'true'
+
+# JWT Secret（文件持久化，保证多 worker 共享）
 app.config['JWT_SECRET'] = os.environ.get('QUOTE_JWT_SECRET', '')
 if not app.config['JWT_SECRET']:
-    # 尝试从文件加载（多worker共享同一secret）
     _secret_file = BASE_DIR / '.jwt_secret'
     if _secret_file.exists():
         app.config['JWT_SECRET'] = _secret_file.read_text().strip()
     if not app.config['JWT_SECRET']:
         app.config['JWT_SECRET'] = secrets.token_hex(32)
         _secret_file.write_text(app.config['JWT_SECRET'])
-app.config['JWT_EXPIRY_HOURS'] = 72
-app.config['DEFAULT_ADMIN_PASSWORD'] = os.environ.get('QUOTE_ADMIN_PASSWORD', '')  # 空值=首次启动自动生成随机密码
-app.config['REGISTRATION_OPEN'] = os.environ.get('QUOTE_REGISTRATION', 'true').lower() == 'true'
+        _secret_file.chmod(0o600)
+
+app.config['DEFAULT_ADMIN_PASSWORD'] = os.environ.get('QUOTE_ADMIN_PASSWORD', '')
 
 db.init_app(app)
 
-# ─── API Routes ──────────────────────────────────────────────
+# ─── 公开路由（不需要认证） ────────────────────────────────────
+PUBLIC_ROUTES = {
+    'auth.auth_login', 'auth.auth_register', 'auth.auth_registration_status',
+    'get_version', 'health_check', 'index',
+}
 
-# 公开路由（无需登录）
-PUBLIC_ROUTES = {'auth.auth_login', 'auth.auth_register', 'auth.auth_registration_status', 'get_version', 'health_check', 'index'}
-
-# ─── 全局错误处理 ───
+# ─── 全局错误处理 ─────────────────────────────────────────────
 @app.errorhandler(400)
 @app.errorhandler(404)
 @app.errorhandler(405)
+@app.errorhandler(409)
+@app.errorhandler(413)
+@app.errorhandler(422)
 @app.errorhandler(500)
 def _handle_error(e):
-    return jsonify({'error': e.description if hasattr(e, 'description') else str(e)}), e.code if hasattr(e, 'code') else 500
+    return jsonify({'error': e.description if hasattr(e, 'description') else str(e)}), \
+           e.code if hasattr(e, 'code') else 500
 
-# ─── 请求日志中间件 ───
-import time as _req_time
 
-@app.after_request
-def _log_request(response):
-    if request.path.startswith('/api/') and not request.path.startswith('/api/assets'):
-        elapsed = (int((_req_time.time() - g.get('_req_start', _req_time.time())) * 1000))
-        user = getattr(g, 'current_user', None)
-        username = user.username if user else '-'
-        method = request.method
-        status = response.status_code
-        if status >= 400 or elapsed > 3000:  # 只记慢请求和错误
-            _debug_log(f'{method} {request.path} {status} {elapsed}ms user={username}')
-    return response
-
+# ─── 请求时间 & 日志中间件 ────────────────────────────────────
 @app.before_request
 def _mark_req_start():
     g._req_start = _req_time.time()
 
+
+@app.after_request
+def _log_request(response):
+    if request.path.startswith('/api/') and not request.path.startswith('/api/assets'):
+        elapsed = int((_req_time.time() - g.get('_req_start', _req_time.time())) * 1000)
+        user = getattr(g, 'current_user', None)
+        username = user.username if user else '-'
+        if response.status_code >= 400 or elapsed > 3000:
+            _debug_log(f'{request.method} {request.path} {response.status_code} {elapsed}ms user={username}')
+    return response
+
+
+# ─── 全局认证中间件 ───────────────────────────────────────────
 @app.before_request
 def check_auth():
-    # 放行 CORS preflight (OPTIONS) 请求
     if request.method == 'OPTIONS':
         return None
     if not request.path.startswith('/api/') and not request.path.startswith('/uploads/'):
         return None
-    # 提取路由名
     endpoint = request.endpoint
     if endpoint in PUBLIC_ROUTES or (endpoint and endpoint.startswith('static')):
         return None
-    token = request.headers.get('Authorization', '').replace('Bearer ', '') or request.args.get('token', '')
+    token = request.headers.get('Authorization', '').replace('Bearer ', '') \
+            or request.args.get('token', '')
     if token:
         try:
             data = jwt.decode(token, app.config['JWT_SECRET'], algorithms=['HS256'])
@@ -126,27 +138,8 @@ def check_auth():
             return jsonify({'error': '认证失败'}), 401
     return jsonify({'error': '请先登录'}), 401
 
-from utils import _debug_log
 
-# ─── Frontend ────────────────────────────────────────────────
-_dist_dir = os.path.join(os.path.dirname(__file__), 'frontend', 'dist')
-_has_vue_build = os.path.isdir(_dist_dir)
-
-@app.route('/')
-def index():
-    if _has_vue_build:
-        return send_file(os.path.join(_dist_dir, 'index.html'))
-    return 'Frontend not built', 404
-
-# Serve Vue build assets (JS/CSS) from /assets/ and /quote/assets/
-@app.route('/assets/<path:filename>')
-@app.route('/quote/assets/<path:filename>')
-def vue_assets(filename):
-    if _has_vue_build:
-        return send_from_directory(os.path.join(_dist_dir, 'assets'), filename)
-    return 'Not Found', 404
-
-
+# ─── 系统 API ─────────────────────────────────────────────────
 @app.route('/api/version', methods=['GET'])
 def get_version():
     version_file = BASE_DIR / 'version.txt'
@@ -156,9 +149,10 @@ def get_version():
         ver = '0.1.1'
     return jsonify({'version': ver})
 
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    """健康检查 — 验证DB连通性"""
+    """健康检查 — 验证 DB 连通性"""
     try:
         db.session.execute(text('SELECT 1'))
         db_ok = True
@@ -167,102 +161,141 @@ def health_check():
     status = 200 if db_ok else 503
     return jsonify({'status': 'ok' if db_ok else 'db_error', 'db': db_ok}), status
 
-@app.route('/uploads/<path:filename>')
-def serve_upload(filename):
-    """提供上传的图片等静态文件"""
-    return send_from_directory(UPLOAD_DIR, filename)
+
+# ─── 静态文件 ─────────────────────────────────────────────────
+_dist_dir = os.path.join(os.path.dirname(__file__), 'frontend', 'dist')
+_has_vue_build = os.path.isdir(_dist_dir)
 
 
-# ─── SPA catch-all (must be LAST route) ──────
-@app.route('/<path:path>')
-def spa_catch_all(path):
-    """所有非 API/静态文件路径 → 返回 Vue SPA"""
+@app.route('/')
+def index():
     if _has_vue_build:
         return send_file(os.path.join(_dist_dir, 'index.html'))
     return 'Frontend not built', 404
 
 
-# ─── Init DB ────────────────────────────────────────────────
+@app.route('/assets/<path:filename>')
+@app.route('/quote/assets/<path:filename>')
+def vue_assets(filename):
+    if _has_vue_build:
+        return send_from_directory(os.path.join(_dist_dir, 'assets'), filename)
+    return 'Not Found', 404
 
-with app.app_context():
-    # 启用 SQLite WAL 模式（并发读写更安全）
-    from sqlalchemy import text
+
+@app.route('/uploads/<path:filename>')
+def serve_upload(filename):
+    return send_from_directory(UPLOAD_DIR, filename)
+
+
+@app.route('/<path:path>')
+def spa_catch_all(path):
+    # 未知 /api/ 路径返回 404 JSON，不走 SPA
+    if path.startswith('api/'):
+        return jsonify({'error': 'Not Found'}), 404
+    if _has_vue_build:
+        return send_file(os.path.join(_dist_dir, 'index.html'))
+    return 'Frontend not built', 404
+
+
+# ─── 数据库初始化 ─────────────────────────────────────────────
+
+def _configure_sqlite():
+    """启用 WAL 模式，提高并发读写性能"""
     try:
         db.session.execute(text('PRAGMA journal_mode=WAL'))
         db.session.execute(text('PRAGMA busy_timeout=5000'))
         db.session.commit()
     except Exception:
         pass
-    db.create_all()
 
-    # 自动迁移：检测缺失列并ALTER TABLE（SQLite兼容）
-    _auto_migrate_columns = [
+
+def _run_schema_migrations():
+    """自动迁移：检测缺失列并 ALTER TABLE（SQLAlchemy 方式）"""
+    columns_to_add = [
         ('quotes', 'remark', 'TEXT'),
     ]
-    import sqlite3 as _sqlite3
-    _auto_db = _sqlite3.connect(str(BASE_DIR / 'quote.db'))
-    _existing = _auto_db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-    _existing_tables = {r[0] for r in _existing}
-    for _tbl, _col, _col_type in _auto_migrate_columns:
-        if _tbl in _existing_tables:
-            _cols = [r[1] for r in _auto_db.execute(f'PRAGMA table_info({_tbl})').fetchall()]
-            if _col not in _cols:
+    inspector = sa_inspect(db.engine)
+    existing_tables = set(inspector.get_table_names())
+    for tbl, col, col_type in columns_to_add:
+        if tbl in existing_tables:
+            existing_cols = {c['name'] for c in inspector.get_columns(tbl)}
+            if col not in existing_cols:
                 try:
-                    _auto_db.execute(f'ALTER TABLE {_tbl} ADD COLUMN {_col} {_col_type}')
-                    _auto_db.commit()
-                    print(f'[Migrate] 已添加 {_tbl}.{_col}')
+                    db.session.execute(text(f'ALTER TABLE {tbl} ADD COLUMN {col} {col_type}'))
+                    db.session.commit()
+                    print(f'[Migrate] 已添加 {tbl}.{col}')
                 except Exception as e:
-                    print(f'[Migrate] 添加 {_tbl}.{_col} 失败: {e}')
-    _auto_db.close()
+                    print(f'[Migrate] 添加 {tbl}.{col} 失败: {e}')
 
-    # 数据迁移：旧英文状态 → 新中文状态
-    _valid_new = {'项目报价中', '项目已报价未付款', '项目生产中', '项目完结', '项目返工', '项目终止'}
+
+def _run_data_migrations():
+    """迁移历史数据（旧英文状态 → 新中文状态，孤儿报价单归属）"""
+    valid_statuses = {'项目报价中', '项目已报价未付款', '项目生产中', '项目完结', '项目返工', '项目终止'}
     try:
-        _old_statuses = db.session.query(Quote.status).distinct().all()
-        _old_statuses = [r[0] for r in _old_statuses if r[0] and r[0] not in _valid_new]
-        for _old in _old_statuses:
-            db.session.query(Quote).filter(Quote.status == _old).update(
+        old_statuses = [
+            r[0] for r in db.session.query(Quote.status).distinct().all()
+            if r[0] and r[0] not in valid_statuses
+        ]
+        for old in old_statuses:
+            db.session.query(Quote).filter(Quote.status == old).update(
                 {'status': '项目报价中'}, synchronize_session=False)
-            print(f'[Migrate] 报价单状态 "{_old}" → "项目报价中"')
-        if _old_statuses:
+            print(f'[Migrate] 报价单状态 "{old}" → "项目报价中"')
+        if old_statuses:
             db.session.commit()
     except Exception as e:
         print(f'[Migrate] 状态迁移跳过: {e}')
 
-    # 预置管理员账号
+    # 孤儿报价单（created_by 为空）归属给 admin
+    try:
+        orphans = Quote.query.filter(Quote.created_by.is_(None)).all()
+        if orphans:
+            admin_user = User.query.filter_by(username='admin').first()
+            if admin_user:
+                for q in orphans:
+                    q.created_by = admin_user.id
+                db.session.commit()
+                print(f'[Init] 已为 {len(orphans)} 条孤儿报价单分配创建者: admin')
+    except Exception:
+        pass
+
+
+def _seed_defaults():
+    """预置管理员账号和默认系统设置"""
+    # 管理员账号
     if not User.query.filter_by(username='admin').first():
         _admin_pwd = app.config['DEFAULT_ADMIN_PASSWORD']
         if not _admin_pwd:
-            # 未设环境变量时，生成随机密码并写入文件，避免硬编码弱密码
-            _admin_pwd = 'admin123'
-            _pwd_file = Path(BASE_DIR) / '.admin_password'
+            # 生成真正的随机密码
+            _admin_pwd = secrets.token_urlsafe(16)
+            _pwd_file = BASE_DIR / '.admin_password'
             _pwd_file.write_text(_admin_pwd)
             _pwd_file.chmod(0o600)
-            print(f'[Init] 随机密码已写入 {_pwd_file}（请妥善保管）')
+            print(f'[Init] 随机管理员密码已写入 {_pwd_file}（请妥善保管）')
         admin = User(
             username='admin',
             password_hash=hash_password(_admin_pwd),
-            role='admin', is_active=True
+            role='admin', is_active=True,
         )
         db.session.add(admin)
         db.session.commit()
-        print(f'[Init] 已创建管理员: admin / [密码已设]')
-    # 迁移：历史报价单 assign 给 admin (user_id=1)
-    orphan_quotes = Quote.query.filter(Quote.created_by.is_(None)).all()
-    if orphan_quotes:
-        admin_user = User.query.filter_by(username='admin').first()
-        if admin_user:
-            for q in orphan_quotes:
-                q.created_by = admin_user.id
-            db.session.commit()
-            print(f'[Init] 已为 {len(orphan_quotes)} 条历史报价单分配创建者: admin')
+        print('[Init] 已创建管理员: admin')
 
-    # 初始化默认系统设置
+    # 默认系统设置
     defaults = {'company_name': '', 'footer_text': ''}
     for k, v in defaults.items():
         if not SystemSetting.query.filter_by(key=k).first():
             db.session.add(SystemSetting(key=k, value=v))
     db.session.commit()
+
+
+# ─── 启动时执行 ───────────────────────────────────────────────
+with app.app_context():
+    db.create_all()
+    _configure_sqlite()
+    _run_schema_migrations()
+    _run_data_migrations()
+    _seed_defaults()
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)
