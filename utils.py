@@ -17,13 +17,4 @@ def _debug_log(msg):
         pass
 
 
-def _safe_number(val):
-    """安全转换为 float，失败返回 0。"""
-    if val is None:
-        return 0
-    if isinstance(val, (int, float)):
-        return round(float(val), 2)
-    try:
-        return round(float(val), 2)
-    except (ValueError, TypeError):
-        return 0
+

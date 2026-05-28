@@ -86,33 +86,6 @@ class Supplier(db.Model):
         }
 
 
-# ─── 沟通记录（供应商↔客服）─────────────────────────────────
-class CommunicationRecord(db.Model):
-    __tablename__ = 'communication_records'
-    id = db.Column(db.Integer, primary_key=True)
-    supplier_id = db.Column(db.Integer, db.ForeignKey('suppliers.id', ondelete='CASCADE'), nullable=False, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
-    content = db.Column(db.Text, nullable=False)
-    communication_date = db.Column(db.DateTime, default=datetime.now)
-    created_at = db.Column(db.DateTime, default=datetime.now)
-    supplier = db.relationship('Supplier', backref=db.backref('communication_records', lazy='dynamic', cascade='all, delete-orphan'))
-
-    def to_dict(self):
-        creator_name = ''
-        if self.user_id:
-            user = db.session.get(User, self.user_id)
-            creator_name = user.username if user else ''
-        return {
-            'id': self.id,
-            'supplier_id': self.supplier_id,
-            'user_id': self.user_id,
-            'creator_name': creator_name,
-            'content': self.content,
-            'communication_date': self.communication_date.strftime('%Y-%m-%d %H:%M') if self.communication_date else '',
-            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M') if self.created_at else '',
-        }
-
-
 class Quote(db.Model):
     __tablename__ = 'quotes'
     id = db.Column(db.Integer, primary_key=True)
@@ -188,14 +161,6 @@ class User(db.Model):
             'created_at': self.created_at.strftime('%Y-%m-%d %H:%M') if self.created_at else '',
             'last_login': self.last_login.strftime('%Y-%m-%d %H:%M') if self.last_login else '',
         }
-
-
-class FieldSetting(db.Model):
-    __tablename__ = 'field_settings'
-    id = db.Column(db.Integer, primary_key=True)
-    field_name = db.Column(db.String(50), unique=True, nullable=False)
-    label = db.Column(db.String(100), nullable=False)
-    user_visible = db.Column(db.Boolean, default=True)
 
 
 class SystemSetting(db.Model):

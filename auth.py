@@ -249,11 +249,8 @@ def session_info():
             new_token = create_token(g.current_user, current_app)
     except Exception:
         pass
-    # Lazy import to avoid circular dependency
-    from helpers import get_field_visibility
     resp = jsonify({
         'user': g.current_user.to_dict(),
-        'field_visibility': get_field_visibility() if not is_admin else {},
         'registration_open': _is_registration_open(),
     })
     if new_token:

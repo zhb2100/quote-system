@@ -6,7 +6,7 @@ Admin Blueprint — 管理后台 API 路由
 from flask import Blueprint, request, jsonify, g, current_app
 
 from extensions import db
-from models import User, FieldSetting, SystemSetting, LoginLog
+from models import User, SystemSetting, LoginLog
 from auth import require_admin, hash_password, _is_registration_open
 from helpers import get_setting, get_all_settings
 
@@ -62,49 +62,6 @@ def update_settings():
     return jsonify({'settings': get_all_settings()})
 
 
-# ─── 字段设置 ────────────────────────────────────────────────
-
-@admin_bp.route('/fields', methods=['GET'])
-@require_admin
-def get_field_settings():
-    fields = FieldSetting.query.all()
-    if not fields:
-        # 初始化默认字段
-        defaults = [
-            ('cost_price', '成本价', True),
-            ('remark', '内部备注', True),
-            ('supplier', '供应商', True),
-            ('function_desc', '功能描述', True),
-        ]
-        for fname, label, visible in defaults:
-            if not FieldSetting.query.filter_by(field_name=fname).first():
-                db.session.add(FieldSetting(field_name=fname, label=label, user_visible=visible))
-        db.session.commit()
-        fields = FieldSetting.query.all()
-    return jsonify({'fields': [{'field_name': f.field_name, 'label': f.label, 'user_visible': f.user_visible} for f in fields]})
-
-
-@admin_bp.route('/fields', methods=['PUT'])
-@require_admin
-def set_field_settings():
-    data = request.get_json()
-    if 'fields' in data:
-        fields_data = data['fields']
-        # 兼容两种格式：对象 {key: bool} 或数组 [{field_name, user_visible}]
-        if isinstance(fields_data, dict):
-            for field_name, user_visible in fields_data.items():
-                f = FieldSetting.query.filter_by(field_name=field_name).first()
-                if f:
-                    f.user_visible = bool(user_visible)
-        else:
-            for item in fields_data:
-                f = FieldSetting.query.filter_by(field_name=item['field_name']).first()
-                if f:
-                    f.user_visible = bool(item.get('user_visible', True))
-        db.session.commit()
-    return get_field_settings()
-
-
 # ─── 用户管理 ────────────────────────────────────────────────
 
 @admin_bp.route('/users', methods=['GET'])
@@ -126,6 +83,27 @@ def list_users():
         'page': page,
         'pages': paginated.pages
     })
+
+
+@admin_bp.route('/users', methods=['POST'])
+@require_admin
+def create_user():
+    data = request.get_json()
+    if not data or not data.get('username', '').strip() or not data.get('password', '').strip():
+        return jsonify({'error': '用户名和密码不能为空'}), 400
+    username = data['username'].strip()
+    if User.query.filter_by(username=username).first():
+        return jsonify({'error': '用户名已存在'}), 409
+    user = User(
+        username=username,
+        password_hash=hash_password(data['password'].strip()),
+        role=data.get('role', 'user'),
+        is_active=True,
+        email=data.get('email', '').strip(),
+    )
+    db.session.add(user)
+    db.session.commit()
+    return jsonify({'user': user.to_dict()}), 201
 
 
 @admin_bp.route('/users/<int:user_id>', methods=['PUT'])

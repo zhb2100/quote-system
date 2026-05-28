@@ -28,6 +28,8 @@ const userPerPage = ref(20)
 const userTotal = ref(0)
 const userTotalPages = computed(() => Math.max(1, Math.ceil(userTotal.value / userPerPage.value)))
 const loadingUsers = ref(true)
+const showUserModal = ref(false)
+const newUserForm = ref({ username: '', password: '', email: '', role: 'user' })
 
 // ─── User pagination pages ───
 const userPageNumbers = computed(() => {
@@ -93,6 +95,29 @@ async function resetPassword(user) {
   const r = await api(`/api/admin/users/${user.id}/password`, 'PUT', { password: pw })
   if (r.error) { toast(r.error, 'danger'); return }
   toast('密码已重置')
+}
+
+function openAddUser() {
+  newUserForm.value = { username: '', password: '', email: '', role: 'user' }
+  showUserModal.value = true
+}
+
+async function saveNewUser() {
+  const f = newUserForm.value
+  if (!f.username.trim()) { toast('请输入用户名', 'warning'); return }
+  if (!f.password.trim()) { toast('请输入密码', 'warning'); return }
+  if (f.password.trim().length < 3) { toast('密码至少3位', 'warning'); return }
+  const r = await api('/api/admin/users', 'POST', {
+    username: f.username.trim(),
+    password: f.password.trim(),
+    email: f.email.trim(),
+    role: f.role,
+  })
+  if (r.error) { toast(r.error, 'danger'); return }
+  showUserModal.value = false
+  toast('用户已创建')
+  fetchUsers()
+  fetchUserAccounts()
 }
 
 async function deleteUser(user) {
@@ -309,7 +334,10 @@ onMounted(() => {
 
     <!-- Users -->
     <div class="card-modern mb-3">
-      <div class="card-title-modern"><i class="bi bi-person-lines-fill text-primary"></i>用户管理</div>
+      <div class="card-title-modern d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-person-lines-fill text-primary"></i>用户管理</span>
+        <button class="btn btn-sm btn-primary btn-modern" @click="openAddUser"><i class="bi bi-plus-lg"></i> 新增用户</button>
+      </div>
       <div v-if="loadingUsers" class="text-center py-3">
         <div class="spinner-border spinner-border-sm text-primary"></div>
       </div>
@@ -425,6 +453,38 @@ onMounted(() => {
         </table>
       </div>
     </div>
+
+    <!-- User Modal -->
+    <Teleport to="body">
+      <div v-if="showUserModal" class="modal-backdrop show" @click="showUserModal = false"></div>
+      <div v-if="showUserModal" class="modal d-block modern-modal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered" style="max-width:400px">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title">新增用户</h5>
+              <button type="button" class="btn-close" @click="showUserModal = false"></button>
+            </div>
+            <div class="modal-body">
+              <label class="form-label-modern">用户名 <span class="text-danger">*</span></label>
+              <input class="form-control mb-2" v-model="newUserForm.username" placeholder="登录用户名">
+              <label class="form-label-modern">密码 <span class="text-danger">*</span></label>
+              <input class="form-control mb-2" type="password" v-model="newUserForm.password" placeholder="至少3位">
+              <label class="form-label-modern">邮箱</label>
+              <input class="form-control mb-2" v-model="newUserForm.email" placeholder="选填">
+              <label class="form-label-modern">角色</label>
+              <select class="form-select" v-model="newUserForm.role">
+                <option value="user">普通用户</option>
+                <option value="admin">管理员</option>
+              </select>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-primary btn-modern" @click="saveNewUser">创建</button>
+              <button class="btn btn-secondary btn-modern" @click="showUserModal = false">取消</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Modal -->
     <Teleport to="body">

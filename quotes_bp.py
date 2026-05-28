@@ -2,7 +2,7 @@
 Quotes Blueprint — 报价单相关 API 路由
 """
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from flask import Blueprint, request, jsonify, g
@@ -46,7 +46,6 @@ NEXT_STATUS_DISPLAY = {
 
 @quotes_bp.route('/api/quotes', methods=['GET'])
 def list_quotes():
-    import re
     page = request.args.get('page', 1, type=int)
     per_page = min(request.args.get('per_page', 20, type=int), 200)
     search = request.args.get('search', '').strip()
@@ -202,7 +201,6 @@ def quote_stats():
 @quotes_bp.route('/api/quotes/trends', methods=['GET'])
 def quote_trends():
     months = request.args.get('months', 6, type=int)
-    from datetime import datetime, timedelta
     now = datetime.now()
     results = []
     for i in range(months - 1, -1, -1):

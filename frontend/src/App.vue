@@ -4,7 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useApi } from './composables/useApi'
 import ToastMessage from './components/ToastMessage.vue'
 
-const { api, authToken, currentUser, fieldVisibility, registrationOpen, setToken, isLoggedIn, isAdmin } = useApi()
+const { api, authToken, currentUser, registrationOpen, setToken, isLoggedIn, isAdmin } = useApi()
 
 const router = useRouter()
 const route = useRoute()
@@ -47,12 +47,6 @@ const allTabs = [
   { id: 'admin', label: '管理', icon: 'bi bi-gear', adminOnly: true },
 ]
 const tabs = computed(() => allTabs.filter(t => !t.adminOnly || isAdmin()))
-
-const titles = {
-  dashboard: '首页', quotes: '报价管理',
-  newquote: '新建报价单', import: '导入导出', admin: '管理',
-  login: '登录'
-}
 
 // ─── Version ───
 const version = ref('')
@@ -120,7 +114,6 @@ onMounted(async () => {
     const d = await api('/api/session')
     if (d.user) {
       currentUser.value = d.user
-      fieldVisibility.value = d.field_visibility || {}
       registrationOpen.value = d.registration_open !== false
     }
   } catch (e) { /* offline — stay on current page */ }

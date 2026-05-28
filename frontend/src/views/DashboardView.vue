@@ -29,9 +29,7 @@ const STATUS_COLORS = {
 }
 
 const trendCanvas = ref(null)
-const pieCanvas = ref(null)
 let trendChart = null
-let pieChart = null
 
 async function fetchDashboard() {
   loading.value = true
@@ -53,18 +51,17 @@ async function fetchDashboard() {
     inProgressCount.value = Object.entries(statusCounts.value)
       .filter(([s]) => s !== '项目完结' && s !== '项目终止')
       .reduce((sum, [, c]) => sum + c, 0)
-    await nextTick()
-    renderCharts()
   } catch (e) {
     toast('加载概览失败', 'danger')
   } finally {
     loading.value = false
+    await nextTick()
+    renderCharts()
   }
 }
 
 function renderCharts() {
   if (trendChart) trendChart.destroy()
-  if (pieChart) pieChart.destroy()
   if (trendCanvas.value && trendData.value.length) {
     trendChart = new Chart(trendCanvas.value, {
       type: 'line',
@@ -81,34 +78,13 @@ function renderCharts() {
       },
       options: {
         responsive: true,
+        maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: {
           y: { beginAtZero: true, ticks: { stepSize: 1 } },
         },
       },
     })
-  }
-  if (pieCanvas.value) {
-    const labels = Object.keys(statusCounts.value)
-    const data = Object.values(statusCounts.value)
-    if (labels.length) {
-      pieChart = new Chart(pieCanvas.value, {
-        type: 'doughnut',
-        data: {
-          labels,
-          datasets: [{
-            data,
-            backgroundColor: labels.map(l => STATUS_COLORS[l] || '#6c757d'),
-          }],
-        },
-        options: {
-          responsive: true,
-          plugins: {
-            legend: { position: 'right', labels: { font: { size: 11 } } },
-          },
-        },
-      })
-    }
   }
 }
 
@@ -187,20 +163,10 @@ onMounted(fetchDashboard)
       </div>
     </div>
 
-    <!-- Trend Chart + Pie Chart -->
-    <div class="row g-3 mb-3">
-      <div class="col-md-7">
-        <div class="card-modern anim-in" style="animation-delay:.05s">
-          <div class="card-title-modern"><span><i class="bi bi-graph-up text-primary me-2"></i>月度趋势</span></div>
-          <canvas ref="trendCanvas" style="max-height:220px"></canvas>
-        </div>
-      </div>
-      <div class="col-md-5">
-        <div class="card-modern anim-in" style="animation-delay:.05s">
-          <div class="card-title-modern"><span><i class="bi bi-pie-chart text-primary me-2"></i>状态占比</span></div>
-          <canvas ref="pieCanvas" style="max-height:220px"></canvas>
-        </div>
-      </div>
+    <!-- Trend Chart -->
+    <div class="card-modern mb-3 anim-in" style="animation-delay:.05s">
+      <div class="card-title-modern"><span><i class="bi bi-graph-up text-primary me-2"></i>月度趋势</span></div>
+      <div style="height:220px;position:relative"><canvas ref="trendCanvas"></canvas></div>
     </div>
 
     <!-- Status Distribution -->

@@ -9,13 +9,13 @@ import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from flask import Flask, request, jsonify, send_file, send_from_directory, render_template, g
+from flask import Flask, request, jsonify, send_file, send_from_directory, g
 from flask_cors import CORS
 from sqlalchemy import func
 import jwt
 
 from extensions import db
-from models import Quote, User, FieldSetting, SystemSetting
+from models import Quote, User, SystemSetting
 from auth import auth_bp, hash_password, verify_password, create_token, require_auth, require_admin, _is_registration_open
 from helpers import get_setting, get_all_settings, check_quote_owner
 
@@ -67,10 +67,6 @@ app.config['DEFAULT_ADMIN_PASSWORD'] = os.environ.get('QUOTE_ADMIN_PASSWORD', ''
 app.config['REGISTRATION_OPEN'] = os.environ.get('QUOTE_REGISTRATION', 'true').lower() == 'true'
 
 db.init_app(app)
-
-# Flask-Migrate (Alembic) — 替代手动 ALTER TABLE
-from flask_migrate import Migrate
-migrate = Migrate(app, db)
 
 # ─── API Routes ──────────────────────────────────────────────
 
@@ -130,7 +126,7 @@ def check_auth():
             return jsonify({'error': '认证失败'}), 401
     return jsonify({'error': '请先登录'}), 401
 
-from utils import _debug_log, _safe_number
+from utils import _debug_log
 
 # ─── Frontend ────────────────────────────────────────────────
 _dist_dir = os.path.join(os.path.dirname(__file__), 'frontend', 'dist')
@@ -140,7 +136,7 @@ _has_vue_build = os.path.isdir(_dist_dir)
 def index():
     if _has_vue_build:
         return send_file(os.path.join(_dist_dir, 'index.html'))
-    return render_template('index.html')
+    return 'Frontend not built', 404
 
 # Serve Vue build assets (JS/CSS) from /assets/ and /quote/assets/
 @app.route('/assets/<path:filename>')
@@ -183,7 +179,7 @@ def spa_catch_all(path):
     """所有非 API/静态文件路径 → 返回 Vue SPA"""
     if _has_vue_build:
         return send_file(os.path.join(_dist_dir, 'index.html'))
-    return render_template('index.html')
+    return 'Frontend not built', 404
 
 
 # ─── Init DB ────────────────────────────────────────────────
